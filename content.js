@@ -1,192 +1,113 @@
-// Content script to inject weather widget on web pages
 let widgetContainer = null;
 let weatherWidget = null;
 let timeWidget = null;
+
 let settings = {
   widgetEnabled: true,
   timeEnabled: true,
-  isCelsius: false,
-  position: 'top-right',
+  isCelsius: true,
+  widgetPosition: 'top-right',
   transparency: 0.75,
 };
 
-// Load settings from storage
-chrome.storage.sync.get(['widgetEnabled', 'timeEnabled', 'isCelsius', 'widgetPosition', 'transparency', 'weatherPosition', 'timePosition'], (result) => {
+const WEATHER_ICONS = {
+  0: '☀️', 1: '🌤️', 2: '⛅', 3: '☁️',
+  45: '🌫️', 48: '🌫️',
+  51: '🌦️', 53: '🌦️', 55: '🌦️',
+  56: '🌨️', 57: '🌨️',
+  61: '🌧️', 63: '🌧️', 65: '⛈️',
+  66: '🌨️', 67: '🌨️',
+  71: '❄️', 73: '❄️', 75: '🌨️',
+  77: '❄️',
+  80: '🌦️', 81: '🌧️', 82: '⛈️',
+  85: '❄️', 86: '🌨️',
+  95: '⛈️', 96: '⛈️', 99: '⛈️',
+};
+
+chrome.storage.sync.get([
+  'widgetEnabled', 'timeEnabled', 'isCelsius', 'widgetPosition',
+  'transparency', 'weatherPosition', 'timePosition', 'lastLocation'
+], (result) => {
   settings.widgetEnabled = result.widgetEnabled !== false;
   settings.timeEnabled = result.timeEnabled !== false;
   settings.isCelsius = result.isCelsius === true;
-  settings.position = result.widgetPosition || 'top-right';
-  settings.transparency = result.transparency !== undefined ? result.transparency : 0.75;
-  
-  if (settings.widgetEnabled || settings.timeEnabled) {
-    initWidget();
-  }
+  settings.widgetPosition = result.widgetPosition || 'top-right';
+  settings.transparency = result.transparency ?? 0.75;
+
+  createWidgetContainer();
+
+  if (settings.widgetEnabled) createWeatherWidget(result.weatherPosition, result.lastLocation);
+  if (settings.timeEnabled) createTimeWidget(result.timePosition);
 });
 
-// Listen for settings updates
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'updateSettings') {
     settings = { ...settings, ...message.settings };
-    updateWidget();
+    updateWidgets();
     sendResponse({ success: true });
   }
-  return true; // Keep channel open for async response
+  return true;
 });
 
-// Initialize widget
-function initWidget() {
-  // Create widget container (just for positioning reference, widgets are separate)
+function createWidgetContainer() {
   if (!widgetContainer) {
     widgetContainer = document.createElement('div');
     widgetContainer.id = 'weather-time-widget';
-    widgetContainer.className = `widget-position-${settings.position}`;
     document.body.appendChild(widgetContainer);
-  }
-
-  // Create weather widget (separate, independently draggable)
-  if (settings.widgetEnabled && !weatherWidget) {
-    createWeatherWidget();
-  }
-
-  // Create time widget (separate, independently draggable)
-  if (settings.timeEnabled && !timeWidget) {
-    createTimeWidget();
   }
 }
 
-// Create weather widget
-async function createWeatherWidget() {
+async function createWeatherWidget(savedPosition = null, lastLocation = null) {
   if (weatherWidget) return;
-  
-  // Ensure widgetContainer exists for reference
-  if (!widgetContainer) {
-    widgetContainer = document.createElement('div');
-    widgetContainer.id = 'weather-time-widget';
-    document.body.appendChild(widgetContainer);
-  }
 
   weatherWidget = document.createElement('div');
   weatherWidget.id = 'weather-widget';
   weatherWidget.className = 'widget-item';
-  
-  // Load saved position
-  const savedPos = await chrome.storage.sync.get('weatherPosition');
-  if (savedPos.weatherPosition) {
-    weatherWidget.style.left = savedPos.weatherPosition.left + 'px';
-    weatherWidget.style.top = savedPos.weatherPosition.top + 'px';
-    weatherWidget.style.right = 'auto';
-    weatherWidget.style.bottom = 'auto';
-  } else {
-    // Default position
-    weatherWidget.style.top = '20px';
-    weatherWidget.style.right = '20px';
-  }
-  
-  updateWidgetTransparency(weatherWidget);
+  setWidgetPosition(weatherWidget, savedPosition, { top: 20, right: 20 });
+  setWidgetTransparency(weatherWidget);
 
-  try {
-    // Get location from storage
-    const result = await chrome.storage.sync.get('lastLocation');
-    let coords = result.lastLocation;
+  const fetchWeather = async () => {
+    try {
+      const coords = lastLocation || { latitude: 40.7128, longitude: -74.0060 };
+      const response = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${coords.latitude}&longitude=${coords.longitude}&current_weather=true&timezone=auto`);
+      const data = await response.json();
 
-    if (!coords) {
-      // Default location
-      coords = { latitude: 40.7128, longitude: -74.0060 };
-    }
-
-    // Fetch weather
-    const response = await fetch(
-      `https://api.open-meteo.com/v1/forecast?latitude=${coords.latitude}&longitude=${coords.longitude}&current_weather=true&timezone=auto`
-    );
-    const data = await response.json();
-
-    if (data.current_weather) {
-      const temp = settings.isCelsius
-        ? `${Math.round(data.current_weather.temperature)}°C`
-        : `${Math.round((data.current_weather.temperature * 9) / 5 + 32)}°F`;
-
-      const weatherCode = data.current_weather.weathercode;
-      const weatherIcons = {
-        0: '☀️', 1: '🌤️', 2: '⛅', 3: '☁️',
-        45: '🌫️', 48: '🌫️',
-        51: '🌦️', 53: '🌦️', 55: '🌦️',
-        56: '🌨️', 57: '🌨️',
-        61: '🌧️', 63: '🌧️', 65: '⛈️',
-        66: '🌨️', 67: '🌨️',
-        71: '❄️', 73: '❄️', 75: '🌨️',
-        77: '❄️',
-        80: '🌦️', 81: '🌧️', 82: '⛈️',
-        85: '❄️', 86: '🌨️',
-        95: '⛈️', 96: '⛈️', 99: '⛈️',
-      };
-
-      // Smart fallback for unknown codes
-      let icon = weatherIcons[weatherCode];
-      if (!icon) {
-        if (weatherCode >= 0 && weatherCode <= 3) icon = '☁️';
-        else if (weatherCode >= 45 && weatherCode <= 48) icon = '🌫️';
-        else if (weatherCode >= 51 && weatherCode <= 67) icon = '🌧️';
-        else if (weatherCode >= 71 && weatherCode <= 77) icon = '❄️';
-        else if (weatherCode >= 80 && weatherCode <= 86) icon = '🌦️';
-        else if (weatherCode >= 95 && weatherCode <= 99) icon = '⛈️';
-        else icon = '🌤️';
+      let temp = '--';
+      let icon = '🌤️';
+      if (data.current_weather) {
+        temp = settings.isCelsius
+          ? `${Math.round(data.current_weather.temperature)}°C`
+          : `${Math.round((data.current_weather.temperature * 9) / 5 + 32)}°F`;
+        icon = WEATHER_ICONS[data.current_weather.weathercode] || '🌤️';
       }
 
-      weatherWidget.innerHTML = `
-        <div class="weather-icon">${icon}</div>
-        <div class="weather-temp">${temp}</div>
-      `;
+      weatherWidget.innerHTML = `<div class="weather-icon">${icon}</div><div class="weather-temp">${temp}</div>`;
+    } catch (err) {
+      console.error('Weather fetch error:', err);
+      weatherWidget.innerHTML = '<div class="weather-error">Weather unavailable 🌤️</div>';
     }
-  } catch (error) {
-    console.error('Weather fetch error:', error);
-    weatherWidget.innerHTML = '<div class="weather-error">🌤️</div>';
-  }
+  };
+
+  fetchWeather();
+  setInterval(fetchWeather, 15 * 60 * 1000);
 
   document.body.appendChild(weatherWidget);
   makeDraggable(weatherWidget, 'weatherPosition');
 }
 
-// Create time widget
-async function createTimeWidget() {
+function createTimeWidget(savedPosition = null) {
   if (timeWidget) return;
-  
-  // Ensure widgetContainer exists for reference
-  if (!widgetContainer) {
-    widgetContainer = document.createElement('div');
-    widgetContainer.id = 'weather-time-widget';
-    document.body.appendChild(widgetContainer);
-  }
 
   timeWidget = document.createElement('div');
   timeWidget.id = 'time-widget';
   timeWidget.className = 'widget-item';
-  
-  // Load saved position
-  const savedPos = await chrome.storage.sync.get('timePosition');
-  if (savedPos.timePosition) {
-    timeWidget.style.left = savedPos.timePosition.left + 'px';
-    timeWidget.style.top = savedPos.timePosition.top + 'px';
-    timeWidget.style.right = 'auto';
-    timeWidget.style.bottom = 'auto';
-  } else {
-    // Default position (below weather widget)
-    timeWidget.style.top = '90px';
-    timeWidget.style.right = '20px';
-  }
-  
-  updateWidgetTransparency(timeWidget);
+  setWidgetPosition(timeWidget, savedPosition, { top: 90, right: 20 });
+  setWidgetTransparency(timeWidget);
 
   const updateTime = () => {
     const now = new Date();
-    const time = now.toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: true,
-    });
-    timeWidget.innerHTML = `<div class="time-display">${time}</div>`;
+    timeWidget.innerHTML = `<div class="time-display">${now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true })}</div>`;
   };
-
   updateTime();
   setInterval(updateTime, 1000);
 
@@ -194,94 +115,95 @@ async function createTimeWidget() {
   makeDraggable(timeWidget, 'timePosition');
 }
 
-// Update widget transparency
-function updateWidgetTransparency(widget) {
-  if (!widget) return;
-  const alpha = settings.transparency || 0.75;
-  widget.style.background = `rgba(20, 30, 25, ${alpha})`;
-}
-
-// Update widget based on settings
-function updateWidget() {
-  // Update weather widget
-  if (settings.widgetEnabled && !weatherWidget) {
-    createWeatherWidget();
-  } else if (!settings.widgetEnabled && weatherWidget) {
+function updateWidgets() {
+  if (settings.widgetEnabled) {
+    if (!weatherWidget) createWeatherWidget();
+    else setWidgetTransparency(weatherWidget);
+  } else if (weatherWidget) {
     weatherWidget.remove();
     weatherWidget = null;
-  } else if (weatherWidget) {
-    updateWidgetTransparency(weatherWidget);
   }
 
-  // Update time widget
-  if (settings.timeEnabled && !timeWidget) {
-    createTimeWidget();
-  } else if (!settings.timeEnabled && timeWidget) {
+  if (settings.timeEnabled) {
+    if (!timeWidget) createTimeWidget();
+    else setWidgetTransparency(timeWidget);
+  } else if (timeWidget) {
     timeWidget.remove();
     timeWidget = null;
-  } else if (timeWidget) {
-    updateWidgetTransparency(timeWidget);
   }
 
-  // Remove container if both disabled
   if (!settings.widgetEnabled && !settings.timeEnabled && widgetContainer) {
     widgetContainer.remove();
     widgetContainer = null;
   }
 }
 
-// Make widget draggable (separately for each widget)
+function setWidgetPosition(widget, savedPosition, defaultPosition) {
+  if (savedPosition) {
+    widget.style.left = savedPosition.left + 'px';
+    widget.style.top = savedPosition.top + 'px';
+    widget.style.right = 'auto';
+    widget.style.bottom = 'auto';
+  } else {
+    if (defaultPosition.top !== undefined) widget.style.top = defaultPosition.top + 'px';
+    if (defaultPosition.right !== undefined) widget.style.right = defaultPosition.right + 'px';
+  }
+}
+
+function setWidgetTransparency(widget) {
+  const alpha = settings.transparency ?? 0.75;
+  widget.style.background = `rgba(20, 30, 25, ${alpha})`;
+}
+
 function makeDraggable(element, positionKey) {
   let isDragging = false;
-  let currentX;
-  let currentY;
-  let initialX;
-  let initialY;
+  let offsetX, offsetY;
 
-  element.addEventListener('mousedown', (e) => {
+  element.style.cursor = 'grab';
+  element.addEventListener('pointerdown', (e) => {
     isDragging = true;
-    element.classList.add('dragging');
-    initialX = e.clientX - element.offsetLeft;
-    initialY = e.clientY - element.offsetTop;
+    element.setPointerCapture(e.pointerId);
     element.style.cursor = 'grabbing';
-    e.stopPropagation();
+    offsetX = e.clientX - element.offsetLeft;
+    offsetY = e.clientY - element.offsetTop;
+    element.style.userSelect = 'none';
   });
 
-  document.addEventListener('mousemove', (e) => {
-    if (isDragging) {
-      e.preventDefault();
-      currentX = e.clientX - initialX;
-      currentY = e.clientY - initialY;
-      
-      // Keep widget within viewport bounds
-      const maxX = window.innerWidth - element.offsetWidth;
-      const maxY = window.innerHeight - element.offsetHeight;
-      currentX = Math.max(0, Math.min(currentX, maxX));
-      currentY = Math.max(0, Math.min(currentY, maxY));
-      
-      element.style.left = currentX + 'px';
-      element.style.top = currentY + 'px';
-      element.style.right = 'auto';
-      element.style.bottom = 'auto';
-    }
+  element.addEventListener('pointermove', (e) => {
+    if (!isDragging) return;
+    e.preventDefault();
+    let x = e.clientX - offsetX;
+    let y = e.clientY - offsetY;
+    x = Math.max(0, Math.min(x, window.innerWidth - element.offsetWidth));
+    y = Math.max(0, Math.min(y, window.innerHeight - element.offsetHeight));
+    element.style.left = x + 'px';
+    element.style.top = y + 'px';
+    element.style.right = 'auto';
+    element.style.bottom = 'auto';
   });
 
-  document.addEventListener('mouseup', () => {
-    if (isDragging) {
-      isDragging = false;
-      element.classList.remove('dragging');
-      element.style.cursor = 'grab';
-      
-      // Save position
-      if (positionKey) {
-        chrome.storage.sync.set({
-          [positionKey]: {
-            left: parseInt(element.style.left),
-            top: parseInt(element.style.top)
-          }
-        });
-      }
+  element.addEventListener('pointerup', (e) => {
+    if (!isDragging) return;
+    isDragging = false;
+    element.releasePointerCapture(e.pointerId);
+    element.style.cursor = 'grab';
+    element.style.userSelect = '';
+    if (positionKey) {
+      chrome.storage.sync.set({
+        [positionKey]: { left: parseInt(element.style.left), top: parseInt(element.style.top) }
+      });
     }
   });
 }
 
+window.addEventListener('resize', () => {
+  [weatherWidget, timeWidget].forEach(widget => {
+    if (!widget) return;
+    const maxX = window.innerWidth - widget.offsetWidth;
+    const maxY = window.innerHeight - widget.offsetHeight;
+    let x = parseInt(widget.style.left) || 0;
+    let y = parseInt(widget.style.top) || 0;
+    widget.style.left = Math.min(x, maxX) + 'px';
+    widget.style.top = Math.min(y, maxY) + 'px';
+  });
+});
