@@ -29,21 +29,18 @@ const WEATHER_ICONS = {
   95: '⛈️', 96: '⛈️', 99: '⛈️',
 };
 
+// Load settings from chrome storage
 chrome.storage.sync.get([
   'widgetEnabled', 'timeEnabled', 'isCelsius', 'widgetPosition',
   'transparency', 'weatherPosition', 'timePosition', 'lastLocation', 'customLocation'
 ], (result) => {
   settings.widgetEnabled = result.widgetEnabled !== false;
   settings.timeEnabled = result.timeEnabled !== false;
-  settings.isCelsius = result.isCelsius === true;
+  settings.isCelsius = result.isCelsius !== false; // Default to Celsius
   settings.widgetPosition = result.widgetPosition || 'top-right';
   settings.transparency = result.transparency ?? 0.75;
 
-  if (result.customLocation) {
-    locationData = { ...result.customLocation };
-  } else if (result.lastLocation) {
-    locationData = { ...result.lastLocation };
-  }
+  locationData = result.customLocation || result.lastLocation || null;
 
   createWidgetContainer();
 
@@ -51,6 +48,7 @@ chrome.storage.sync.get([
   if (settings.timeEnabled) createTimeWidget(result.timePosition);
 });
 
+// Listen for messages from popup or other scripts
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'updateSettings') {
     settings = { ...settings, ...message.settings };
@@ -67,6 +65,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
+// Listen for changes in chrome storage
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== 'sync') return;
   if (changes.customLocation) {
@@ -79,6 +78,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
 });
 
+// Create container for widgets
 function createWidgetContainer() {
   if (!widgetContainer) {
     widgetContainer = document.createElement('div');
@@ -87,6 +87,7 @@ function createWidgetContainer() {
   }
 }
 
+// Weather Widget
 async function createWeatherWidget(savedPosition = null) {
   if (weatherWidget) return;
 
@@ -96,7 +97,7 @@ async function createWeatherWidget(savedPosition = null) {
   setWidgetPosition(weatherWidget, savedPosition, { top: 20, right: 20 });
   setWidgetTransparency(weatherWidget);
 
-  const fetchWeather = async () => {
+  weatherFetcher = async () => {
     try {
       const coords = getActiveCoords();
       const response = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${coords.latitude}&longitude=${coords.longitude}&current_weather=true&timezone=auto`);
@@ -111,11 +112,10 @@ async function createWeatherWidget(savedPosition = null) {
         icon = WEATHER_ICONS[data.current_weather.weathercode] || '🌤️';
       }
 
-      const label = coords.label || locationData?.label || 'Device location';
       weatherWidget.innerHTML = `
         <div class="weather-icon">${icon}</div>
         <div class="weather-temp">${temp}</div>
-        <div class="widget-location">${label}</div>
+        <div class="widget-location">${coords.label || locationData?.label || 'Device location'}</div>
       `;
     } catch (err) {
       console.error('Weather fetch error:', err);
@@ -123,14 +123,14 @@ async function createWeatherWidget(savedPosition = null) {
     }
   };
 
-  weatherFetcher = fetchWeather;
-  fetchWeather();
-  weatherIntervalId = setInterval(fetchWeather, 15 * 60 * 1000);
+  weatherFetcher();
+  weatherIntervalId = setInterval(weatherFetcher, 15 * 60 * 1000);
 
   document.body.appendChild(weatherWidget);
   makeDraggable(weatherWidget, 'weatherPosition');
 }
 
+// Time Widget
 function createTimeWidget(savedPosition = null) {
   if (timeWidget) return;
 
@@ -140,31 +140,27 @@ function createTimeWidget(savedPosition = null) {
   setWidgetPosition(timeWidget, savedPosition, { top: 90, right: 20 });
   setWidgetTransparency(timeWidget);
 
-  const updateTime = () => {
+  timeUpdateFn = () => {
     const now = new Date();
-    const timeZone = getActiveTimezone();
-    const label = locationData?.label || 'Device time';
     const timeString = now.toLocaleTimeString('en-US', {
       hour: 'numeric',
       minute: '2-digit',
       second: '2-digit',
       hour12: true,
-      timeZone,
+      timeZone: getActiveTimezone(), // Internal timezone
     });
-    timeWidget.innerHTML = `
-      <div class="time-display">${timeString}</div>
-      <div class="widget-location">${label}</div>
-    `;
+    // Only show time, no label
+    timeWidget.innerHTML = `<div class="time-display">${timeString}</div>`;
   };
 
-  timeUpdateFn = updateTime;
-  updateTime();
-  timeIntervalId = setInterval(updateTime, 1000);
+  timeUpdateFn();
+  timeIntervalId = setInterval(timeUpdateFn, 1000);
 
   document.body.appendChild(timeWidget);
   makeDraggable(timeWidget, 'timePosition');
 }
 
+// Update widgets when settings change
 function updateWidgets() {
   if (settings.widgetEnabled) {
     if (!weatherWidget) createWeatherWidget();
@@ -172,10 +168,8 @@ function updateWidgets() {
   } else if (weatherWidget) {
     weatherWidget.remove();
     weatherWidget = null;
-    if (weatherIntervalId) {
-      clearInterval(weatherIntervalId);
-      weatherIntervalId = null;
-    }
+    clearInterval(weatherIntervalId);
+    weatherIntervalId = null;
     weatherFetcher = null;
   }
 
@@ -185,10 +179,8 @@ function updateWidgets() {
   } else if (timeWidget) {
     timeWidget.remove();
     timeWidget = null;
-    if (timeIntervalId) {
-      clearInterval(timeIntervalId);
-      timeIntervalId = null;
-    }
+    clearInterval(timeIntervalId);
+    timeIntervalId = null;
     timeUpdateFn = null;
   }
 
@@ -198,6 +190,7 @@ function updateWidgets() {
   }
 }
 
+// Widget positioning and transparency
 function setWidgetPosition(widget, savedPosition, defaultPosition) {
   if (savedPosition) {
     widget.style.left = savedPosition.left + 'px';
@@ -215,6 +208,7 @@ function setWidgetTransparency(widget) {
   widget.style.background = `rgba(20, 30, 25, ${alpha})`;
 }
 
+// Make widgets draggable and save position
 function makeDraggable(element, positionKey) {
   let isDragging = false;
   let offsetX, offsetY;
@@ -256,6 +250,7 @@ function makeDraggable(element, positionKey) {
   });
 }
 
+// Ensure widgets stay within screen bounds on resize
 window.addEventListener('resize', () => {
   [weatherWidget, timeWidget].forEach(widget => {
     if (!widget) return;
@@ -268,6 +263,7 @@ window.addEventListener('resize', () => {
   });
 });
 
+// Helpers
 function getActiveCoords() {
   if (locationData?.latitude && locationData?.longitude) {
     return locationData;
@@ -280,13 +276,9 @@ function getActiveTimezone() {
 }
 
 function refreshWeatherWidget() {
-  if (weatherFetcher) {
-    weatherFetcher();
-  }
+  if (weatherFetcher) weatherFetcher();
 }
 
 function refreshTimeWidget() {
-  if (timeUpdateFn) {
-    timeUpdateFn();
-  }
+  if (timeUpdateFn) timeUpdateFn();
 }
