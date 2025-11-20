@@ -28,7 +28,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     ]);
 
     toggleWidget.checked = result.widgetEnabled !== false;
-    toggleTime.checked = result.timeEnabled !== false;
+    toggleTime.checked = result.timeEnabled !== true;
     toggleCelsius.checked = result.isCelsius === true;
     widgetPosition.value = result.widgetPosition || 'top-right';
     const transparency = result.transparency !== undefined ? result.transparency : 0.75;
@@ -76,31 +76,37 @@ document.addEventListener('DOMContentLoaded', async () => {
   };
 
   // Update time display
-  const updateTime = () => {
-    const now = new Date();
-    const timeZone = currentLocation?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const time = now.toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: true,
-      timeZone,
-    });
-    const date = now.toLocaleDateString('en-US', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-      timeZone,
-    });
-    const timezoneLabel = currentLocation?.label || 'Device time';
+const updateTime = () => {
+  const now = new Date();
 
-    timeDisplay.innerHTML = `
-      <div class="time">${time}</div>
-      <div class="date">${date}</div>
-      <div class="timezone-label">${timezoneLabel}</div>
-    `;
-  };
+  // Use location timezone internally
+  const timeZone = currentLocation?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+  // Format time according to timezone
+  const time = now.toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+    timeZone, 
+  });
+
+  // Format date according to timezone
+  const date = now.toLocaleDateString('en-US', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    timeZone, 
+  });
+
+  // Display only time and date in popup
+  timeDisplay.innerHTML = `
+    <div class="time">${time}</div>
+    <div class="date">${date}</div>
+  `;
+};
+
 
   // Fetch and display weather
   const fetchWeather = async () => {
