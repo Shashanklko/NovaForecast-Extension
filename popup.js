@@ -9,6 +9,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   const transparencySlider = document.getElementById('transparencySlider');
   const transparencyValue = document.getElementById('transparencyValue');
   const refreshWeather = document.getElementById('refreshWeather');
+  const locationInput = document.getElementById('locationInput');
+  const saveLocationBtn = document.getElementById('saveLocation');
+  const locationStatus = document.getElementById('locationStatus');
+
+  let currentLocation = null;
 
   // Load saved settings
   const loadSettings = async () => {
@@ -18,6 +23,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       'isCelsius',
       'widgetPosition',
       'transparency',
+      'customLocation',
+      'lastLocation',
     ]);
 
     toggleWidget.checked = result.widgetEnabled !== false;
@@ -27,6 +34,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     const transparency = result.transparency !== undefined ? result.transparency : 0.75;
     transparencySlider.value = transparency;
     transparencyValue.textContent = Math.round(transparency * 100) + '%';
+
+    if (result.customLocation) {
+      currentLocation = { ...result.customLocation };
+      locationInput.value = currentLocation.label || '';
+      locationStatus.textContent = `Using ${currentLocation.label || 'saved location'}`;
+    } else if (result.lastLocation) {
+      currentLocation = { ...result.lastLocation };
+      locationStatus.textContent = 'Using previously detected location';
+    } else {
+      currentLocation = null;
+      locationStatus.textContent = 'Using device location';
+    }
   };
 
   // Save settings
@@ -59,22 +78,27 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Update time display
   const updateTime = () => {
     const now = new Date();
+    const timeZone = currentLocation?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
     const time = now.toLocaleTimeString('en-US', {
       hour: 'numeric',
       minute: '2-digit',
       second: '2-digit',
       hour12: true,
+      timeZone,
     });
     const date = now.toLocaleDateString('en-US', {
       weekday: 'long',
       year: 'numeric',
       month: 'long',
       day: 'numeric',
+      timeZone,
     });
+    const timezoneLabel = currentLocation?.label || 'Device time';
 
     timeDisplay.innerHTML = `
       <div class="time">${time}</div>
       <div class="date">${date}</div>
+      <div class="timezone-label">${timezoneLabel}</div>
     `;
   };
 
@@ -83,33 +107,49 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
       weatherDisplay.innerHTML = '<div class="loading">Loading weather...</div>';
 
-      // Get location from storage or geolocation
-      let coords = await chrome.storage.sync.get('lastLocation');
-      
-      if (!coords.lastLocation) {
-        // Try to get current location
-        if (navigator.geolocation) {
-          navigator.geolocation.getCurrentPosition(
-            async (position) => {
-              const location = {
-                latitude: position.coords.latitude,
-                longitude: position.coords.longitude,
-              };
-              await chrome.storage.sync.set({ lastLocation: location });
-              await loadWeatherData(location);
-            },
-            async () => {
-              // Default to a location if geolocation fails
-              const defaultLocation = { latitude: 40.7128, longitude: -74.0060 }; // NYC
-              await loadWeatherData(defaultLocation);
-            }
-          );
-        } else {
-          const defaultLocation = { latitude: 40.7128, longitude: -74.0060 };
-          await loadWeatherData(defaultLocation);
-        }
+      // Prefer custom/saved location
+      if (currentLocation?.latitude && currentLocation?.longitude) {
+        await loadWeatherData(currentLocation);
+        return;
+      }
+
+      const stored = await chrome.storage.sync.get(['customLocation', 'lastLocation']);
+      if (stored.customLocation) {
+        currentLocation = { ...stored.customLocation };
+        await loadWeatherData(currentLocation);
+        locationStatus.textContent = `Using ${currentLocation.label || 'saved location'}`;
+        return;
+      }
+
+      if (stored.lastLocation) {
+        currentLocation = { ...stored.lastLocation };
+        await loadWeatherData(currentLocation);
+        locationStatus.textContent = 'Using previously detected location';
+        return;
+      }
+
+      // Try to get current location
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          async (position) => {
+            const location = {
+              latitude: position.coords.latitude,
+              longitude: position.coords.longitude,
+            };
+            currentLocation = { ...location };
+            await chrome.storage.sync.set({ lastLocation: location });
+            await loadWeatherData(location);
+          },
+          async () => {
+            const defaultLocation = { latitude: 40.7128, longitude: -74.0060, label: 'New York, USA' };
+            await loadWeatherData(defaultLocation);
+            locationStatus.textContent = 'Using default location (New York, USA)';
+          }
+        );
       } else {
-        await loadWeatherData(coords.lastLocation);
+        const defaultLocation = { latitude: 40.7128, longitude: -74.0060, label: 'New York, USA' };
+        await loadWeatherData(defaultLocation);
+        locationStatus.textContent = 'Using default location (New York, USA)';
       }
     } catch (error) {
       console.error('Weather fetch error:', error);
@@ -146,11 +186,76 @@ document.addEventListener('DOMContentLoaded', async () => {
           <div style="font-size: 48px; margin-bottom: 10px;">${icon}</div>
           <div class="weather-temp">${temp}</div>
           <div class="weather-condition">Weather Code: ${weatherCode}</div>
+          <div class="weather-location">${coords.label || currentLocation?.label || 'Device location'}</div>
         `;
       }
     } catch (error) {
       console.error('Weather load error:', error);
       weatherDisplay.innerHTML = '<div class="loading">Error loading weather</div>';
+    }
+  };
+
+  const handleLocationSave = async () => {
+    const query = locationInput.value.trim();
+    if (!query) {
+      locationStatus.textContent = 'Please enter a location name.';
+      return;
+    }
+
+    locationStatus.textContent = 'Searching...';
+    saveLocationBtn.disabled = true;
+
+    try {
+      const response = await fetch(
+        `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(query)}&count=1&language=en&format=json`
+      );
+      if (!response.ok) {
+        throw new Error('Failed to search location.');
+      }
+      const data = await response.json();
+      if (!data.results || !data.results.length) {
+        throw new Error('No matches found.');
+      }
+
+      const result = data.results[0];
+      const label = [result.name, result.country_code].filter(Boolean).join(', ');
+      const locationData = {
+        label,
+        latitude: result.latitude,
+        longitude: result.longitude,
+        timezone: result.timezone,
+      };
+
+      await chrome.storage.sync.set({
+        customLocation: locationData,
+        lastLocation: { latitude: locationData.latitude, longitude: locationData.longitude },
+      });
+
+      currentLocation = { ...locationData };
+      locationStatus.textContent = `Using ${label}`;
+
+      await fetchWeather();
+      updateTime();
+      notifyContentScripts(locationData);
+    } catch (err) {
+      console.error('Location update error:', err);
+      locationStatus.textContent = err.message || 'Unable to set location.';
+    } finally {
+      saveLocationBtn.disabled = false;
+    }
+  };
+
+  const notifyContentScripts = async (locationData) => {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab?.id) {
+        chrome.tabs.sendMessage(tab.id, {
+          action: 'locationUpdated',
+          location: locationData,
+        });
+      }
+    } catch (err) {
+      console.warn('Failed to notify content scripts', err);
     }
   };
 
@@ -167,6 +272,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   toggleCelsius.addEventListener('change', saveSettings);
   widgetPosition.addEventListener('change', saveSettings);
   refreshWeather.addEventListener('click', fetchWeather);
+  saveLocationBtn.addEventListener('click', handleLocationSave);
+  locationInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      handleLocationSave();
+    }
+  });
 
   // Initialize
   await loadSettings();

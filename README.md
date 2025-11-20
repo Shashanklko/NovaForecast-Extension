@@ -24,6 +24,7 @@ A browser extension that displays weather and time on every website you visit.
 - **Customizable Position**: Choose from 4 corner positions
 - **Draggable Widget**: Hold Shift and drag to reposition anywhere
 - **Temperature Units**: Toggle between Celsius and Fahrenheit
+- **Manual Location & Timezone**: Enter any city to pin weather + local time
 - **Auto-refresh**: Weather updates every 30 minutes
 
 ## Usage
@@ -34,6 +35,7 @@ A browser extension that displays weather and time on every website you visit.
    - Toggle time display on/off
    - Choose temperature unit (Celsius/Fahrenheit)
    - Select widget position
+   - Enter a custom city/country to use that location's weather + local time
 3. The widget will appear on all websites you visit
 4. Hold Shift and drag to move the widget anywhere on the page
 
